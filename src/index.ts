@@ -1,5 +1,5 @@
 import { serve } from "@hono/node-server";
-import { createAuth } from "./auth/index.js";
+import { createAuth, mountAuth } from "./auth/index.js";
 import { app } from "./app.js";
 
 const port = 3000;
@@ -9,7 +9,9 @@ if (!secret) {
   throw new Error("BETTER_AUTH_SECRET is not set");
 }
 
-export const auth = createAuth(secret);
+const auth = createAuth(secret);
+
+mountAuth(app, auth);
 
 serve(
   {
