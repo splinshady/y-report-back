@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1795644237248,
+      "tag": "0000_schedule_request",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795645635483,
+      "tag": "0001_schedule_request_decision",
+      "breakpoints": true
+    }
+  ]
+}
