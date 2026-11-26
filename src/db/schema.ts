@@ -1,6 +1,7 @@
 import { relations, sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   pgTable,
   text,
@@ -76,6 +77,25 @@ export const taxiPark = pgTable("taxi_park", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const taxiParkMember = pgTable(
+  "taxi_park_member",
+  {
+    id: text("id").primaryKey(),
+    taxiParkId: text("taxi_park_id")
+      .notNull()
+      .references(() => taxiPark.id),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    role: text("role").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("taxi_park_member_user_id_idx").on(table.userId),
+    check("taxi_park_member_role_check", sql`${table.role} in ('owner', 'worker')`),
+  ],
+);
+
 export const scheduleRequest = pgTable(
   "schedule_request",
   {
@@ -121,15 +141,31 @@ export const scheduleRequestDay = pgTable(
   ],
 );
 
-export const userRelations = relations(user, ({ many }) => ({
+export const userRelations = relations(user, ({ one, many }) => ({
   sessions: many(session),
   accounts: many(account),
+  taxiParkMember: one(taxiParkMember, {
+    fields: [user.id],
+    references: [taxiParkMember.userId],
+  }),
   createdScheduleRequests: many(scheduleRequest, { relationName: "scheduleRequestCreator" }),
   approvedScheduleRequests: many(scheduleRequest, { relationName: "scheduleRequestApprover" }),
 }));
 
 export const taxiParkRelations = relations(taxiPark, ({ many }) => ({
+  members: many(taxiParkMember),
   scheduleRequests: many(scheduleRequest),
+}));
+
+export const taxiParkMemberRelations = relations(taxiParkMember, ({ one }) => ({
+  taxiPark: one(taxiPark, {
+    fields: [taxiParkMember.taxiParkId],
+    references: [taxiPark.id],
+  }),
+  user: one(user, {
+    fields: [taxiParkMember.userId],
+    references: [user.id],
+  }),
 }));
 
 export const scheduleRequestRelations = relations(scheduleRequest, ({ one, many }) => ({

@@ -33,7 +33,7 @@ export const scheduleRequestsResponseSchema = z.object({
 });
 
 const scheduleErrorSchema = z.object({
-  error: z.enum(["unauthorized", "invalid", "conflict", "none", "missing"]),
+  error: z.enum(["unauthorized", "forbidden", "invalid", "conflict", "none", "missing"]),
 });
 
 const createScheduleRequestBodySchema = z.object({
@@ -62,6 +62,7 @@ const listRoute = createRoute({
       },
     },
     401: errorResponse,
+    403: errorResponse,
   },
 });
 
@@ -79,6 +80,7 @@ const createRequestRoute = createRoute({
     },
     400: errorResponse,
     401: errorResponse,
+    403: errorResponse,
     409: errorResponse,
   },
 });
@@ -100,6 +102,7 @@ const rejectRoute = createRoute({
       },
     },
     401: errorResponse,
+    403: errorResponse,
     404: errorResponse,
     409: errorResponse,
   },
@@ -118,6 +121,7 @@ const deleteRoute = createRoute({
       },
     },
     401: errorResponse,
+    403: errorResponse,
     404: errorResponse,
   },
 });
@@ -135,6 +139,7 @@ const approveRoute = createRoute({
       },
     },
     401: errorResponse,
+    403: errorResponse,
     404: errorResponse,
     409: errorResponse,
   },
@@ -161,33 +166,52 @@ function daysAreValid(days: ScheduleDay[]): boolean {
   return days.every((day) => isCalendarDate(day.date));
 }
 
-async function readActor(
-  getSession: (headers: Headers) => Promise<ScheduleActor | null>,
-  headers: Headers,
-): Promise<ScheduleActor | null> {
-  return getSession(headers);
-}
+type ScheduleMembership = {
+  taxiParkId: string;
+  role: "owner" | "worker";
+};
 
 export function createScheduleRoute(options: {
   store: ScheduleStore;
   getSession: (headers: Headers) => Promise<ScheduleActor | null>;
+  getMembership: (headers: Headers) => Promise<ScheduleMembership | null>;
 }) {
   const route = new OpenAPIHono();
 
-  route.openapi(listRoute, async (c) => {
-    const actor = await readActor(options.getSession, c.req.raw.headers);
+  async function readMember(headers: Headers) {
+    const actor = await options.getSession(headers);
     if (!actor) {
-      return c.json({ error: "unauthorized" as const }, 401);
+      return { error: "unauthorized" as const };
     }
 
-    const body = scheduleRequestsResponseSchema.parse({ requests: await options.store.list() });
+    const membership = await options.getMembership(headers);
+    if (!membership) {
+      return { error: "forbidden" as const };
+    }
+
+    return { actor, membership };
+  }
+
+  route.openapi(listRoute, async (c) => {
+    const access = await readMember(c.req.raw.headers);
+    if ("error" in access) {
+      return access.error === "unauthorized"
+        ? c.json({ error: "unauthorized" as const }, 401)
+        : c.json({ error: "forbidden" as const }, 403);
+    }
+
+    const body = scheduleRequestsResponseSchema.parse({
+      requests: await options.store.list(access.membership.taxiParkId),
+    });
     return c.json(body, 200);
   });
 
   route.openapi(createRequestRoute, async (c) => {
-    const actor = await readActor(options.getSession, c.req.raw.headers);
-    if (!actor) {
-      return c.json({ error: "unauthorized" as const }, 401);
+    const access = await readMember(c.req.raw.headers);
+    if ("error" in access) {
+      return access.error === "unauthorized"
+        ? c.json({ error: "unauthorized" as const }, 401)
+        : c.json({ error: "forbidden" as const }, 403);
     }
 
     const json: unknown = await c.req.json().catch(() => null);
@@ -196,7 +220,11 @@ export function createScheduleRoute(options: {
       return c.json({ error: "invalid" as const }, 400);
     }
 
-    const created = await options.store.create(actor, parsed.data.days);
+    const created = await options.store.create(
+      access.membership.taxiParkId,
+      access.actor,
+      parsed.data.days,
+    );
     if (created === "conflict") {
       return c.json({ error: "conflict" as const }, 409);
     }
@@ -205,12 +233,21 @@ export function createScheduleRoute(options: {
   });
 
   route.openapi(approveRoute, async (c) => {
-    const actor = await readActor(options.getSession, c.req.raw.headers);
-    if (!actor) {
-      return c.json({ error: "unauthorized" as const }, 401);
+    const access = await readMember(c.req.raw.headers);
+    if ("error" in access) {
+      return access.error === "unauthorized"
+        ? c.json({ error: "unauthorized" as const }, 401)
+        : c.json({ error: "forbidden" as const }, 403);
+    }
+    if (access.membership.role !== "owner") {
+      return c.json({ error: "forbidden" as const }, 403);
     }
 
-    const updated = await options.store.approve(actor, c.req.param("id"));
+    const updated = await options.store.approve(
+      access.membership.taxiParkId,
+      access.actor,
+      c.req.param("id"),
+    );
     if (updated === "missing") {
       return c.json({ error: "missing" as const }, 404);
     }
@@ -222,12 +259,18 @@ export function createScheduleRoute(options: {
   });
 
   route.openapi(rejectRoute, async (c) => {
-    const actor = await readActor(options.getSession, c.req.raw.headers);
-    if (!actor) {
-      return c.json({ error: "unauthorized" as const }, 401);
+    const access = await readMember(c.req.raw.headers);
+    if ("error" in access) {
+      return access.error === "unauthorized"
+        ? c.json({ error: "unauthorized" as const }, 401)
+        : c.json({ error: "forbidden" as const }, 403);
     }
 
-    const updated = await options.store.reject(actor, c.req.param("id"));
+    const updated = await options.store.reject(
+      access.membership.taxiParkId,
+      access.actor,
+      c.req.param("id"),
+    );
     if (updated === "missing") {
       return c.json({ error: "missing" as const }, 404);
     }
@@ -239,12 +282,14 @@ export function createScheduleRoute(options: {
   });
 
   route.openapi(deleteRoute, async (c) => {
-    const actor = await readActor(options.getSession, c.req.raw.headers);
-    if (!actor) {
-      return c.json({ error: "unauthorized" as const }, 401);
+    const access = await readMember(c.req.raw.headers);
+    if ("error" in access) {
+      return access.error === "unauthorized"
+        ? c.json({ error: "unauthorized" as const }, 401)
+        : c.json({ error: "forbidden" as const }, 403);
     }
 
-    const removed = await options.store.remove(c.req.param("id"));
+    const removed = await options.store.remove(access.membership.taxiParkId, c.req.param("id"));
     if (removed === "missing") {
       return c.json({ error: "missing" as const }, 404);
     }
