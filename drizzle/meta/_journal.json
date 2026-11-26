@@ -15,6 +15,13 @@
       "when": 1795645635483,
       "tag": "0001_schedule_request_decision",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795717209748,
+      "tag": "0002_taxi_park_member",
+      "breakpoints": true
     }
   ]
 }

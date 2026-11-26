@@ -4,7 +4,6 @@ import { createDb } from "./client.js";
 import {
   scheduleRequest,
   scheduleRequestDay,
-  taxiPark,
   user,
 } from "./schema.js";
 import type {
@@ -15,7 +14,6 @@ import type {
   ScheduleShift,
   ScheduleStore,
 } from "./schedule-types.js";
-import { defaultTaxiPark } from "./taxi-park.js";
 
 type Database = ReturnType<typeof createDb>;
 
@@ -94,14 +92,7 @@ function groupRows(
   return [...grouped.values()];
 }
 
-async function ensureTaxiPark(db: Database) {
-  await db
-    .insert(taxiPark)
-    .values({ id: defaultTaxiPark.id, name: defaultTaxiPark.name })
-    .onConflictDoNothing();
-}
-
-async function readRequests(db: Database): Promise<ScheduleRequestRecord[]> {
+async function readRequests(db: Database, taxiParkId: string): Promise<ScheduleRequestRecord[]> {
   const rows = await db
     .select({
       id: scheduleRequest.id,
@@ -121,7 +112,7 @@ async function readRequests(db: Database): Promise<ScheduleRequestRecord[]> {
     .innerJoin(user, eq(user.id, scheduleRequest.createdByUserId))
     .leftJoin(approver, eq(approver.id, scheduleRequest.approvedByUserId))
     .leftJoin(rejector, eq(rejector.id, scheduleRequest.rejectedByUserId))
-    .where(eq(scheduleRequest.taxiParkId, defaultTaxiPark.id))
+    .where(eq(scheduleRequest.taxiParkId, taxiParkId))
     .orderBy(asc(scheduleRequest.createdAt), asc(scheduleRequestDay.workDate));
 
   return groupRows(rows);
@@ -129,20 +120,18 @@ async function readRequests(db: Database): Promise<ScheduleRequestRecord[]> {
 
 export function createDrizzleScheduleStore(db: Database): ScheduleStore {
   return {
-    async list() {
-      await ensureTaxiPark(db);
-      return readRequests(db);
+    async list(taxiParkId) {
+      return readRequests(db, taxiParkId);
     },
 
-    async create(actor: ScheduleActor, days: ScheduleDay[]) {
-      await ensureTaxiPark(db);
+    async create(taxiParkId, actor: ScheduleActor, days: ScheduleDay[]) {
       const dates = days.map((day) => day.date);
       const taken = await db
         .select({ workDate: scheduleRequestDay.workDate })
         .from(scheduleRequestDay)
         .where(
           and(
-            eq(scheduleRequestDay.taxiParkId, defaultTaxiPark.id),
+            eq(scheduleRequestDay.taxiParkId, taxiParkId),
             eq(scheduleRequestDay.reserved, true),
             inArray(scheduleRequestDay.workDate, dates),
           ),
@@ -158,7 +147,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
         await db.transaction(async (tx) => {
           await tx.insert(scheduleRequest).values({
             id: requestId,
-            taxiParkId: defaultTaxiPark.id,
+            taxiParkId,
             createdByUserId: actor.id,
             status: "requested",
           });
@@ -166,7 +155,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
             days.map((day) => ({
               id: crypto.randomUUID(),
               requestId,
-              taxiParkId: defaultTaxiPark.id,
+              taxiParkId,
               workDate: day.date,
               shift: day.shift,
             })),
@@ -179,7 +168,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
         throw error;
       }
 
-      const created = (await readRequests(db)).find((request) => request.id === requestId);
+      const created = (await readRequests(db, taxiParkId)).find((request) => request.id === requestId);
       if (!created) {
         throw new Error("Schedule request was not stored");
       }
@@ -187,13 +176,12 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
       return created;
     },
 
-    async approve(actor: ScheduleActor, requestId: string) {
-      await ensureTaxiPark(db);
+    async approve(taxiParkId, actor: ScheduleActor, requestId: string) {
       const existing = await db
         .select({ id: scheduleRequest.id, status: scheduleRequest.status })
         .from(scheduleRequest)
         .where(
-          and(eq(scheduleRequest.id, requestId), eq(scheduleRequest.taxiParkId, defaultTaxiPark.id)),
+          and(eq(scheduleRequest.id, requestId), eq(scheduleRequest.taxiParkId, taxiParkId)),
         );
 
       const current = existing[0];
@@ -213,7 +201,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
         })
         .where(eq(scheduleRequest.id, requestId));
 
-      const updated = (await readRequests(db)).find((request) => request.id === requestId);
+      const updated = (await readRequests(db, taxiParkId)).find((request) => request.id === requestId);
       if (!updated) {
         return "missing";
       }
@@ -221,13 +209,12 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
       return updated;
     },
 
-    async reject(actor: ScheduleActor, requestId: string) {
-      await ensureTaxiPark(db);
+    async reject(taxiParkId, actor: ScheduleActor, requestId: string) {
       const existing = await db
         .select({ id: scheduleRequest.id, status: scheduleRequest.status })
         .from(scheduleRequest)
         .where(
-          and(eq(scheduleRequest.id, requestId), eq(scheduleRequest.taxiParkId, defaultTaxiPark.id)),
+          and(eq(scheduleRequest.id, requestId), eq(scheduleRequest.taxiParkId, taxiParkId)),
         );
 
       const current = existing[0];
@@ -253,7 +240,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
           .where(eq(scheduleRequestDay.requestId, requestId));
       });
 
-      const updated = (await readRequests(db)).find((request) => request.id === requestId);
+      const updated = (await readRequests(db, taxiParkId)).find((request) => request.id === requestId);
       if (!updated) {
         return "missing";
       }
@@ -261,13 +248,12 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
       return updated;
     },
 
-    async remove(requestId: string) {
-      await ensureTaxiPark(db);
+    async remove(taxiParkId, requestId: string) {
       const existing = await db
         .select({ id: scheduleRequest.id })
         .from(scheduleRequest)
         .where(
-          and(eq(scheduleRequest.id, requestId), eq(scheduleRequest.taxiParkId, defaultTaxiPark.id)),
+          and(eq(scheduleRequest.id, requestId), eq(scheduleRequest.taxiParkId, taxiParkId)),
         );
 
       if (existing.length === 0) {

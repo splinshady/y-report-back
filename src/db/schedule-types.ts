@@ -23,18 +23,21 @@ export type ScheduleRequestRecord = {
 };
 
 export type ScheduleStore = {
-  list: () => Promise<ScheduleRequestRecord[]>;
+  list: (taxiParkId: string) => Promise<ScheduleRequestRecord[]>;
   create: (
+    taxiParkId: string,
     actor: ScheduleActor,
     days: ScheduleDay[],
   ) => Promise<ScheduleRequestRecord | "conflict">;
   approve: (
+    taxiParkId: string,
     actor: ScheduleActor,
     requestId: string,
   ) => Promise<ScheduleRequestRecord | "missing" | "none">;
   reject: (
+    taxiParkId: string,
     actor: ScheduleActor,
     requestId: string,
   ) => Promise<ScheduleRequestRecord | "missing" | "none">;
-  remove: (requestId: string) => Promise<"missing" | "deleted">;
+  remove: (taxiParkId: string, requestId: string) => Promise<"missing" | "deleted">;
 };

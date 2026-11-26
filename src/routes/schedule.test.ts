@@ -1,19 +1,25 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { describe, expect, it } from "vitest";
 import type { ScheduleActor, ScheduleDay, ScheduleRequestRecord, ScheduleStore } from "../db/schedule-types.js";
-import { defaultTaxiPark } from "../db/taxi-park.js";
 import { createScheduleRoute, scheduleRequestSchema, scheduleRequestsResponseSchema } from "./schedule.js";
+
+type ParkMembership = {
+  taxiParkId: string;
+  role: "owner" | "worker";
+};
 
 function createMemoryStore() {
   const requests: ScheduleRequestRecord[] = [];
   const store: ScheduleStore = {
-    async list() {
-      return requests.map((request) => structuredClone(request));
+    async list(taxiParkId) {
+      return requests
+        .filter((request) => request.taxiParkId === taxiParkId)
+        .map((request) => structuredClone(request));
     },
-    async create(actor, days) {
+    async create(taxiParkId, actor, days) {
       const taken = new Set(
         requests
-          .filter((request) => request.status !== "rejected")
+          .filter((request) => request.taxiParkId === taxiParkId && request.status !== "rejected")
           .flatMap((request) => request.days.map((day) => day.date)),
       );
       if (days.some((day) => taken.has(day.date))) {
@@ -22,7 +28,7 @@ function createMemoryStore() {
 
       const request: ScheduleRequestRecord = {
         id: `request-${requests.length + 1}`,
-        taxiParkId: defaultTaxiPark.id,
+        taxiParkId,
         status: "requested",
         createdBy: { id: actor.id, name: actor.name },
         approvedBy: null,
@@ -32,8 +38,8 @@ function createMemoryStore() {
       requests.push(request);
       return structuredClone(request);
     },
-    async approve(actor, requestId) {
-      const request = requests.find((item) => item.id === requestId);
+    async approve(taxiParkId, actor, requestId) {
+      const request = requests.find((item) => item.id === requestId && item.taxiParkId === taxiParkId);
       if (!request) {
         return "missing";
       }
@@ -45,8 +51,8 @@ function createMemoryStore() {
       request.approvedBy = { id: actor.id, name: actor.name };
       return structuredClone(request);
     },
-    async reject(actor, requestId) {
-      const request = requests.find((item) => item.id === requestId);
+    async reject(taxiParkId, actor, requestId) {
+      const request = requests.find((item) => item.id === requestId && item.taxiParkId === taxiParkId);
       if (!request) {
         return "missing";
       }
@@ -58,8 +64,8 @@ function createMemoryStore() {
       request.rejectedBy = { id: actor.id, name: actor.name };
       return structuredClone(request);
     },
-    async remove(requestId) {
-      const index = requests.findIndex((item) => item.id === requestId);
+    async remove(taxiParkId, requestId) {
+      const index = requests.findIndex((item) => item.id === requestId && item.taxiParkId === taxiParkId);
       if (index < 0) {
         return "missing";
       }
@@ -87,20 +93,39 @@ function createApp(store: ScheduleStore) {
 
         return { id, name: decodeURIComponent(name) };
       },
+      getMembership: async (headers) => {
+        const taxiParkId = headers.get("x-park-id");
+        const role = headers.get("x-park-role");
+        if (!taxiParkId || (role !== "owner" && role !== "worker")) {
+          return null;
+        }
+
+        return { taxiParkId, role };
+      },
     }),
   );
   return app;
 }
 
-function asUser(actor: ScheduleActor | null): HeadersInit {
+const parkId = "park-1";
+
+function asUser(actor: ScheduleActor | null, membership: ParkMembership | null = {
+  taxiParkId: parkId,
+  role: "owner",
+}): HeadersInit {
   if (!actor) {
     return {};
   }
 
-  return {
+  const headers: Record<string, string> = {
     "x-user-id": actor.id,
     "x-user-name": encodeURIComponent(actor.name),
   };
+  if (membership) {
+    headers["x-park-id"] = membership.taxiParkId;
+    headers["x-park-role"] = membership.role;
+  }
+  return headers;
 }
 
 const creator: ScheduleActor = { id: "user-anna", name: "Анна" };
@@ -143,7 +168,7 @@ describe("schedule requests", () => {
     expect(created.status).toBe(201);
     const request = scheduleRequestSchema.parse(await created.json());
     expect(request).toMatchObject({
-      taxiParkId: defaultTaxiPark.id,
+      taxiParkId: parkId,
       status: "requested",
       createdBy: creator,
       approvedBy: null,
@@ -250,5 +275,179 @@ describe("schedule requests", () => {
     expect(duplicate.status).toBe(400);
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({ error: "invalid" });
+  });
+
+  it("без членства не читает и не пишет заявки и не вызывает хранилище", async () => {
+    const store = createMemoryStore();
+    const calls = { list: 0, create: 0, approve: 0, reject: 0, remove: 0 };
+    const watched: ScheduleStore = {
+      list: async (taxiParkId) => {
+        calls.list += 1;
+        return store.list(taxiParkId);
+      },
+      create: async (taxiParkId, actor, requestDays) => {
+        calls.create += 1;
+        return store.create(taxiParkId, actor, requestDays);
+      },
+      approve: async (taxiParkId, actor, requestId) => {
+        calls.approve += 1;
+        return store.approve(taxiParkId, actor, requestId);
+      },
+      reject: async (taxiParkId, actor, requestId) => {
+        calls.reject += 1;
+        return store.reject(taxiParkId, actor, requestId);
+      },
+      remove: async (taxiParkId, requestId) => {
+        calls.remove += 1;
+        return store.remove(taxiParkId, requestId);
+      },
+    };
+    const app = createApp(watched);
+    const headers = asUser(creator, null);
+
+    const listed = await app.request("/api/schedule/requests", { headers });
+    const created = await app.request("/api/schedule/requests", {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    const approved = await app.request("/api/schedule/requests/request-1/approve", {
+      method: "POST",
+      headers,
+    });
+    const rejected = await app.request("/api/schedule/requests/request-1/reject", {
+      method: "POST",
+      headers,
+    });
+    const removed = await app.request("/api/schedule/requests/request-1", {
+      method: "DELETE",
+      headers,
+    });
+
+    expect(listed.status).toBe(403);
+    expect(created.status).toBe(403);
+    expect(approved.status).toBe(403);
+    expect(rejected.status).toBe(403);
+    expect(removed.status).toBe(403);
+    expect(await listed.json()).toEqual({ error: "forbidden" });
+    expect(calls).toEqual({ list: 0, create: 0, approve: 0, reject: 0, remove: 0 });
+  });
+
+  it("заявки разных таксопарков не смешиваются", async () => {
+    const app = createApp(createMemoryStore());
+    const firstPark = { taxiParkId: "park-a", role: "owner" as const };
+    const secondPark = { taxiParkId: "park-b", role: "owner" as const };
+
+    const created = await app.request("/api/schedule/requests", {
+      method: "POST",
+      headers: { ...asUser(creator, firstPark), "content-type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    expect(created.status).toBe(201);
+    const request = scheduleRequestSchema.parse(await created.json());
+    expect(request.taxiParkId).toBe(firstPark.taxiParkId);
+
+    const listed = await app.request("/api/schedule/requests", { headers: asUser(approver, secondPark) });
+    expect(scheduleRequestsResponseSchema.parse(await listed.json())).toEqual({ requests: [] });
+
+    const sameDays = await app.request("/api/schedule/requests", {
+      method: "POST",
+      headers: { ...asUser(approver, secondPark), "content-type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    expect(sameDays.status).toBe(201);
+    expect(scheduleRequestSchema.parse(await sameDays.json()).taxiParkId).toBe(secondPark.taxiParkId);
+
+    const approved = await app.request(`/api/schedule/requests/${request.id}/approve`, {
+      method: "POST",
+      headers: asUser(approver, secondPark),
+    });
+    const rejected = await app.request(`/api/schedule/requests/${request.id}/reject`, {
+      method: "POST",
+      headers: asUser(approver, secondPark),
+    });
+    const removed = await app.request(`/api/schedule/requests/${request.id}`, {
+      method: "DELETE",
+      headers: asUser(approver, secondPark),
+    });
+
+    expect(approved.status).toBe(404);
+    expect(rejected.status).toBe(404);
+    expect(removed.status).toBe(404);
+    expect(await approved.json()).toEqual({ error: "missing" });
+
+    const own = await app.request("/api/schedule/requests", { headers: asUser(creator, firstPark) });
+    expect(scheduleRequestsResponseSchema.parse(await own.json()).requests).toEqual([request]);
+  });
+
+  it("работник не утверждает заявку, отклонение и удаление остаются", async () => {
+    const store = createMemoryStore();
+    let approveCalls = 0;
+    const watched: ScheduleStore = {
+      ...store,
+      approve: async (taxiParkId, actor, requestId) => {
+        approveCalls += 1;
+        return store.approve(taxiParkId, actor, requestId);
+      },
+    };
+    const app = createApp(watched);
+    const owner = { taxiParkId: parkId, role: "owner" as const };
+    const worker = { taxiParkId: parkId, role: "worker" as const };
+
+    const created = await app.request("/api/schedule/requests", {
+      method: "POST",
+      headers: { ...asUser(creator, worker), "content-type": "application/json" },
+      body: JSON.stringify({ days }),
+    });
+    expect(created.status).toBe(201);
+    const request = scheduleRequestSchema.parse(await created.json());
+
+    const denied = await app.request(`/api/schedule/requests/${request.id}/approve`, {
+      method: "POST",
+      headers: asUser(creator, worker),
+    });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toEqual({ error: "forbidden" });
+    expect(approveCalls).toBe(0);
+
+    const stillRequested = await app.request("/api/schedule/requests", { headers: asUser(approver, owner) });
+    expect(scheduleRequestsResponseSchema.parse(await stillRequested.json()).requests).toEqual([request]);
+
+    const approved = await app.request(`/api/schedule/requests/${request.id}/approve`, {
+      method: "POST",
+      headers: asUser(approver, owner),
+    });
+    expect(approved.status).toBe(200);
+    expect(scheduleRequestSchema.parse(await approved.json())).toEqual({
+      ...request,
+      status: "approved",
+      approvedBy: approver,
+    });
+    expect(approveCalls).toBe(1);
+
+    const other = await app.request("/api/schedule/requests", {
+      method: "POST",
+      headers: { ...asUser(creator, worker), "content-type": "application/json" },
+      body: JSON.stringify({ days: [{ date: "2026-11-27", shift: "day" }] }),
+    });
+    const otherRequest = scheduleRequestSchema.parse(await other.json());
+
+    const rejected = await app.request(`/api/schedule/requests/${otherRequest.id}/reject`, {
+      method: "POST",
+      headers: asUser(creator, worker),
+    });
+    expect(rejected.status).toBe(200);
+    expect(scheduleRequestSchema.parse(await rejected.json()).status).toBe("rejected");
+
+    const removed = await app.request(`/api/schedule/requests/${otherRequest.id}`, {
+      method: "DELETE",
+      headers: asUser(creator, worker),
+    });
+    expect(removed.status).toBe(200);
+
+    const listed = await app.request("/api/schedule/requests", { headers: asUser(approver, owner) });
+    const body = scheduleRequestsResponseSchema.parse(await listed.json());
+    expect(body.requests.map((item) => item.id)).toEqual([request.id]);
+    expect(body.requests[0]?.status).toBe("approved");
   });
 });
