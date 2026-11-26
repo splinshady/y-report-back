@@ -48,6 +48,7 @@ function groupRows(
   rows: Array<{
     id: string;
     taxiParkId: string;
+    carId: string;
     status: string;
     createdById: string;
     createdByName: string;
@@ -71,6 +72,7 @@ function groupRows(
       request = {
         id: row.id,
         taxiParkId: row.taxiParkId,
+        carId: row.carId,
         status: row.status,
         createdBy: { id: row.createdById, name: row.createdByName },
         approvedBy:
@@ -92,11 +94,16 @@ function groupRows(
   return [...grouped.values()];
 }
 
-async function readRequests(db: Database, taxiParkId: string): Promise<ScheduleRequestRecord[]> {
+async function readRequests(
+  db: Database,
+  taxiParkId: string,
+  carId?: string,
+): Promise<ScheduleRequestRecord[]> {
   const rows = await db
     .select({
       id: scheduleRequest.id,
       taxiParkId: scheduleRequest.taxiParkId,
+      carId: scheduleRequest.carId,
       status: scheduleRequest.status,
       createdById: user.id,
       createdByName: user.name,
@@ -112,7 +119,11 @@ async function readRequests(db: Database, taxiParkId: string): Promise<ScheduleR
     .innerJoin(user, eq(user.id, scheduleRequest.createdByUserId))
     .leftJoin(approver, eq(approver.id, scheduleRequest.approvedByUserId))
     .leftJoin(rejector, eq(rejector.id, scheduleRequest.rejectedByUserId))
-    .where(eq(scheduleRequest.taxiParkId, taxiParkId))
+    .where(
+      carId
+        ? and(eq(scheduleRequest.taxiParkId, taxiParkId), eq(scheduleRequest.carId, carId))
+        : eq(scheduleRequest.taxiParkId, taxiParkId),
+    )
     .orderBy(asc(scheduleRequest.createdAt), asc(scheduleRequestDay.workDate));
 
   return groupRows(rows);
@@ -120,18 +131,18 @@ async function readRequests(db: Database, taxiParkId: string): Promise<ScheduleR
 
 export function createDrizzleScheduleStore(db: Database): ScheduleStore {
   return {
-    async list(taxiParkId) {
-      return readRequests(db, taxiParkId);
+    async list(taxiParkId, carId) {
+      return readRequests(db, taxiParkId, carId);
     },
 
-    async create(taxiParkId, actor: ScheduleActor, days: ScheduleDay[]) {
+    async create(taxiParkId, carId, actor: ScheduleActor, days: ScheduleDay[]) {
       const dates = days.map((day) => day.date);
       const taken = await db
         .select({ workDate: scheduleRequestDay.workDate })
         .from(scheduleRequestDay)
         .where(
           and(
-            eq(scheduleRequestDay.taxiParkId, taxiParkId),
+            eq(scheduleRequestDay.carId, carId),
             eq(scheduleRequestDay.reserved, true),
             inArray(scheduleRequestDay.workDate, dates),
           ),
@@ -148,6 +159,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
           await tx.insert(scheduleRequest).values({
             id: requestId,
             taxiParkId,
+            carId,
             createdByUserId: actor.id,
             status: "requested",
           });
@@ -156,6 +168,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
               id: crypto.randomUUID(),
               requestId,
               taxiParkId,
+              carId,
               workDate: day.date,
               shift: day.shift,
             })),
@@ -168,7 +181,7 @@ export function createDrizzleScheduleStore(db: Database): ScheduleStore {
         throw error;
       }
 
-      const created = (await readRequests(db, taxiParkId)).find((request) => request.id === requestId);
+      const created = (await readRequests(db, taxiParkId, carId)).find((request) => request.id === requestId);
       if (!created) {
         throw new Error("Schedule request was not stored");
       }
