@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   customType,
+  doublePrecision,
   index,
   pgTable,
   text,
@@ -170,6 +171,46 @@ export const scheduleRequestDay = pgTable(
   ],
 );
 
+export const shiftReport = pgTable(
+  "shift_report",
+  {
+    id: text("id").primaryKey(),
+    taxiParkId: text("taxi_park_id")
+      .notNull()
+      .references(() => taxiPark.id),
+    carId: text("car_id")
+      .notNull()
+      .references(() => car.id, { onDelete: "cascade" }),
+    workDate: text("work_date").notNull(),
+    shift: text("shift").notNull(),
+    mileageStart: doublePrecision("mileage_start").notNull(),
+    mileageEnd: doublePrecision("mileage_end").notNull(),
+    cashless: doublePrecision("cashless").notNull(),
+    cash: doublePrecision("cash").notNull(),
+    discount: doublePrecision("discount").notNull(),
+    tip: doublePrecision("tip").notNull(),
+    wash: doublePrecision("wash").notNull(),
+    lineTime: doublePrecision("line_time").notNull(),
+    cashStart: doublePrecision("cash_start").notNull(),
+    cashEnd: doublePrecision("cash_end").notNull(),
+    shiftTotal: doublePrecision("shift_total").notNull(),
+    photo1: bytea("photo_1").notNull(),
+    photo1ContentType: text("photo_1_content_type").notNull(),
+    photo2: bytea("photo_2").notNull(),
+    photo2ContentType: text("photo_2_content_type").notNull(),
+    photo3: bytea("photo_3").notNull(),
+    photo3ContentType: text("photo_3_content_type").notNull(),
+    photo4: bytea("photo_4").notNull(),
+    photo4ContentType: text("photo_4_content_type").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("shift_report_taxi_park_id_idx").on(table.taxiParkId),
+    uniqueIndex("shift_report_car_date_shift_idx").on(table.carId, table.workDate, table.shift),
+    check("shift_report_shift_check", sql`${table.shift} in ('day', 'night')`),
+  ],
+);
+
 export const userRelations = relations(user, ({ one, many }) => ({
   sessions: many(session),
   accounts: many(account),
@@ -185,6 +226,7 @@ export const taxiParkRelations = relations(taxiPark, ({ many }) => ({
   members: many(taxiParkMember),
   cars: many(car),
   scheduleRequests: many(scheduleRequest),
+  shiftReports: many(shiftReport),
 }));
 
 export const carRelations = relations(car, ({ one, many }) => ({
@@ -193,6 +235,7 @@ export const carRelations = relations(car, ({ one, many }) => ({
     references: [taxiPark.id],
   }),
   scheduleRequests: many(scheduleRequest),
+  shiftReports: many(shiftReport),
 }));
 
 export const taxiParkMemberRelations = relations(taxiParkMember, ({ one }) => ({
@@ -226,6 +269,17 @@ export const scheduleRequestRelations = relations(scheduleRequest, ({ one, many 
     relationName: "scheduleRequestApprover",
   }),
   days: many(scheduleRequestDay),
+}));
+
+export const shiftReportRelations = relations(shiftReport, ({ one }) => ({
+  taxiPark: one(taxiPark, {
+    fields: [shiftReport.taxiParkId],
+    references: [taxiPark.id],
+  }),
+  car: one(car, {
+    fields: [shiftReport.carId],
+    references: [car.id],
+  }),
 }));
 
 export const scheduleRequestDayRelations = relations(scheduleRequestDay, ({ one }) => ({

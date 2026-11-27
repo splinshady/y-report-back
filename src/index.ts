@@ -4,9 +4,11 @@ import { app } from "./app.js";
 import { createDrizzleCarStore } from "./db/car-store.js";
 import { createDb } from "./db/client.js";
 import { createDrizzleScheduleStore } from "./db/schedule-store.js";
+import { createDrizzleShiftReportStore, hasApprovedShift } from "./db/shift-report-store.js";
 import { createDrizzleTaxiParkStore } from "./db/taxi-park-store.js";
 import { createCarsRoute } from "./routes/cars.js";
 import { createScheduleRoute } from "./routes/schedule.js";
+import { createShiftReportRoute } from "./routes/shift-report.js";
 import { createTaxiParkRoute } from "./routes/taxi-park.js";
 
 const port = 3000;
@@ -60,6 +62,16 @@ const cars = createCarsRoute({
   getMembership,
 });
 
+const shiftReports = createShiftReportRoute({
+  store: createDrizzleShiftReportStore(db),
+  findCar: (taxiParkId, carId) => carStore.read(taxiParkId, carId),
+  hasApprovedShift: (taxiParkId, carId, date, shift) =>
+    hasApprovedShift(db, taxiParkId, carId, date, shift),
+  getSession,
+  getMembership,
+  today: () => new Date(),
+});
+
 const taxiPark = createTaxiParkRoute({
   store: taxiParkStore,
   getSession: async (headers) => {
@@ -74,6 +86,7 @@ const taxiPark = createTaxiParkRoute({
 
 app.route("/api", schedule);
 app.route("/api", cars);
+app.route("/api", shiftReports);
 app.route("/api", taxiPark);
 
 serve(
