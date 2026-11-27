@@ -2,12 +2,19 @@ import { relations, sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  customType,
   index,
   pgTable,
   text,
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+
+const bytea = customType<{ data: Buffer; default: false }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 export const user = pgTable("user", {
   id: text("id").primaryKey(),
@@ -96,6 +103,21 @@ export const taxiParkMember = pgTable(
   ],
 );
 
+export const car = pgTable(
+  "car",
+  {
+    id: text("id").primaryKey(),
+    taxiParkId: text("taxi_park_id")
+      .notNull()
+      .references(() => taxiPark.id),
+    plate: text("plate").notNull(),
+    photo: bytea("photo"),
+    photoContentType: text("photo_content_type"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [index("car_taxi_park_id_idx").on(table.taxiParkId)],
+);
+
 export const scheduleRequest = pgTable(
   "schedule_request",
   {
@@ -103,6 +125,9 @@ export const scheduleRequest = pgTable(
     taxiParkId: text("taxi_park_id")
       .notNull()
       .references(() => taxiPark.id),
+    carId: text("car_id")
+      .notNull()
+      .references(() => car.id, { onDelete: "cascade" }),
     createdByUserId: text("created_by_user_id")
       .notNull()
       .references(() => user.id),
@@ -115,6 +140,7 @@ export const scheduleRequest = pgTable(
   },
   (table) => [
     index("schedule_request_taxi_park_id_idx").on(table.taxiParkId),
+    index("schedule_request_car_id_idx").on(table.carId),
     index("schedule_request_created_by_user_id_idx").on(table.createdByUserId),
   ],
 );
@@ -129,14 +155,17 @@ export const scheduleRequestDay = pgTable(
     taxiParkId: text("taxi_park_id")
       .notNull()
       .references(() => taxiPark.id),
+    carId: text("car_id")
+      .notNull()
+      .references(() => car.id, { onDelete: "cascade" }),
     workDate: text("work_date").notNull(),
     shift: text("shift").notNull(),
     reserved: boolean("reserved").notNull().default(true),
   },
   (table) => [
     index("schedule_request_day_request_id_idx").on(table.requestId),
-    uniqueIndex("schedule_request_day_park_date_idx")
-      .on(table.taxiParkId, table.workDate)
+    uniqueIndex("schedule_request_day_car_date_idx")
+      .on(table.carId, table.workDate)
       .where(sql`${table.reserved} = true`),
   ],
 );
@@ -154,6 +183,15 @@ export const userRelations = relations(user, ({ one, many }) => ({
 
 export const taxiParkRelations = relations(taxiPark, ({ many }) => ({
   members: many(taxiParkMember),
+  cars: many(car),
+  scheduleRequests: many(scheduleRequest),
+}));
+
+export const carRelations = relations(car, ({ one, many }) => ({
+  taxiPark: one(taxiPark, {
+    fields: [car.taxiParkId],
+    references: [taxiPark.id],
+  }),
   scheduleRequests: many(scheduleRequest),
 }));
 
@@ -172,6 +210,10 @@ export const scheduleRequestRelations = relations(scheduleRequest, ({ one, many 
   taxiPark: one(taxiPark, {
     fields: [scheduleRequest.taxiParkId],
     references: [taxiPark.id],
+  }),
+  car: one(car, {
+    fields: [scheduleRequest.carId],
+    references: [car.id],
   }),
   createdBy: one(user, {
     fields: [scheduleRequest.createdByUserId],
@@ -194,6 +236,10 @@ export const scheduleRequestDayRelations = relations(scheduleRequestDay, ({ one 
   taxiPark: one(taxiPark, {
     fields: [scheduleRequestDay.taxiParkId],
     references: [taxiPark.id],
+  }),
+  car: one(car, {
+    fields: [scheduleRequestDay.carId],
+    references: [car.id],
   }),
 }));
 

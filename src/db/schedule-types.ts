@@ -15,6 +15,7 @@ export type ScheduleDay = {
 export type ScheduleRequestRecord = {
   id: string;
   taxiParkId: string;
+  carId: string;
   status: ScheduleRequestStatus;
   createdBy: ScheduleActor;
   approvedBy: ScheduleActor | null;
@@ -23,9 +24,10 @@ export type ScheduleRequestRecord = {
 };
 
 export type ScheduleStore = {
-  list: (taxiParkId: string) => Promise<ScheduleRequestRecord[]>;
+  list: (taxiParkId: string, carId: string) => Promise<ScheduleRequestRecord[]>;
   create: (
     taxiParkId: string,
+    carId: string,
     actor: ScheduleActor,
     days: ScheduleDay[],
   ) => Promise<ScheduleRequestRecord | "conflict">;

@@ -21,6 +21,7 @@ const scheduleActorSchema = z.object({
 export const scheduleRequestSchema = z.object({
   id: z.string(),
   taxiParkId: z.string(),
+  carId: z.string(),
   status: z.enum(["requested", "approved", "rejected"]),
   createdBy: scheduleActorSchema,
   approvedBy: scheduleActorSchema.nullable(),
@@ -37,6 +38,7 @@ const scheduleErrorSchema = z.object({
 });
 
 const createScheduleRequestBodySchema = z.object({
+  carId: z.string(),
   days: z.array(scheduleDaySchema).min(1),
 });
 
@@ -54,15 +56,17 @@ const listRoute = createRoute({
   path: scheduleRequestsPath,
   responses: {
     200: {
-      description: "Заявки таксопарка",
+      description: "Заявки машины",
       content: {
         "application/json": {
           schema: scheduleRequestsResponseSchema,
         },
       },
     },
+    400: errorResponse,
     401: errorResponse,
     403: errorResponse,
+    404: errorResponse,
   },
 });
 
@@ -81,6 +85,7 @@ const createRequestRoute = createRoute({
     400: errorResponse,
     401: errorResponse,
     403: errorResponse,
+    404: errorResponse,
     409: errorResponse,
   },
 });
@@ -173,6 +178,7 @@ type ScheduleMembership = {
 
 export function createScheduleRoute(options: {
   store: ScheduleStore;
+  findCar: (taxiParkId: string, carId: string) => Promise<{ id: string } | null>;
   getSession: (headers: Headers) => Promise<ScheduleActor | null>;
   getMembership: (headers: Headers) => Promise<ScheduleMembership | null>;
 }) {
@@ -200,8 +206,18 @@ export function createScheduleRoute(options: {
         : c.json({ error: "forbidden" as const }, 403);
     }
 
+    const carId = c.req.query("carId")?.trim() ?? "";
+    if (carId.length === 0) {
+      return c.json({ error: "invalid" as const }, 400);
+    }
+
+    const car = await options.findCar(access.membership.taxiParkId, carId);
+    if (!car) {
+      return c.json({ error: "missing" as const }, 404);
+    }
+
     const body = scheduleRequestsResponseSchema.parse({
-      requests: await options.store.list(access.membership.taxiParkId),
+      requests: await options.store.list(access.membership.taxiParkId, car.id),
     });
     return c.json(body, 200);
   });
@@ -216,12 +232,19 @@ export function createScheduleRoute(options: {
 
     const json: unknown = await c.req.json().catch(() => null);
     const parsed = createScheduleRequestBodySchema.safeParse(json);
-    if (!parsed.success || !daysAreValid(parsed.data.days)) {
+    const carId = parsed.success ? parsed.data.carId.trim() : "";
+    if (!parsed.success || carId.length === 0 || !daysAreValid(parsed.data.days)) {
       return c.json({ error: "invalid" as const }, 400);
+    }
+
+    const car = await options.findCar(access.membership.taxiParkId, carId);
+    if (!car) {
+      return c.json({ error: "missing" as const }, 404);
     }
 
     const created = await options.store.create(
       access.membership.taxiParkId,
+      car.id,
       access.actor,
       parsed.data.days,
     );
