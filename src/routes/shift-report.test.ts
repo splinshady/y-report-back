@@ -10,6 +10,7 @@ import type {
 } from "../db/shift-report-types.js";
 import {
   createShiftReportRoute,
+  shiftReportByIdPath,
   shiftReportPhotoPath,
   shiftReportSchema,
   shiftReportsPath,
@@ -47,7 +48,6 @@ const otherParkId = "park-2";
 const carId = "car-1";
 const secondCarId = "car-2";
 const foreignCarId = "car-other";
-const today = new Date(2026, 10, 25);
 const todayKey = "2026-11-25";
 const yesterdayKey = "2026-11-24";
 const tomorrowKey = "2026-11-26";
@@ -133,7 +133,7 @@ function zeroNumbers() {
 
 function createMemoryStore() {
   const reports: StoredReport[] = [];
-  const calls = { create: 0, read: 0, readPhoto: 0 };
+  const calls = { create: 0, read: 0, readPhoto: 0, list: 0, readById: 0 };
 
   const store: ShiftReportStore = {
     async create(taxiParkId, draft: ShiftReportDraft) {
@@ -172,6 +172,59 @@ function createMemoryStore() {
         })) as StoredReport["photos"],
       };
       reports.push(report);
+      return {
+        id: report.id,
+        carId: report.carId,
+        date: report.date,
+        shift: report.shift,
+        mileageStart: report.mileageStart,
+        mileageEnd: report.mileageEnd,
+        cashless: report.cashless,
+        cash: report.cash,
+        discount: report.discount,
+        tip: report.tip,
+        wash: report.wash,
+        lineTime: report.lineTime,
+        cashStart: report.cashStart,
+        cashEnd: report.cashEnd,
+        shiftTotal: report.shiftTotal,
+      };
+    },
+    async list(taxiParkId, requestCarId) {
+      calls.list += 1;
+      return reports
+        .filter((item) => item.taxiParkId === taxiParkId && item.carId === requestCarId)
+        .sort((left, right) => {
+          if (left.date !== right.date) {
+            return right.date.localeCompare(left.date);
+          }
+          return left.shift.localeCompare(right.shift);
+        })
+        .map((report) => ({
+          id: report.id,
+          carId: report.carId,
+          date: report.date,
+          shift: report.shift,
+          mileageStart: report.mileageStart,
+          mileageEnd: report.mileageEnd,
+          cashless: report.cashless,
+          cash: report.cash,
+          discount: report.discount,
+          tip: report.tip,
+          wash: report.wash,
+          lineTime: report.lineTime,
+          cashStart: report.cashStart,
+          cashEnd: report.cashEnd,
+          shiftTotal: report.shiftTotal,
+        }));
+    },
+    async readById(taxiParkId, reportId) {
+      calls.readById += 1;
+      const report = reports.find((item) => item.taxiParkId === taxiParkId && item.id === reportId);
+      if (!report) {
+        return null;
+      }
+
       return {
         id: report.id,
         carId: report.carId,
@@ -240,7 +293,7 @@ function createMemoryStore() {
   return { store, calls, reports };
 }
 
-function createApp(store: ShiftReportStore, shifts: ShiftInput[], currentDay = today) {
+function createApp(store: ShiftReportStore, shifts: ShiftInput[]) {
   const app = new OpenAPIHono();
   app.route(
     "/api",
@@ -277,7 +330,6 @@ function createApp(store: ShiftReportStore, shifts: ShiftInput[], currentDay = t
 
         return { taxiParkId, role };
       },
-      today: () => currentDay,
     }),
   );
   return app;
@@ -347,7 +399,7 @@ describe("shift report", () => {
     expect(read.status).toBe(401);
     expect(photo.status).toBe(401);
     expect(await created.json()).toEqual({ error: "unauthorized" });
-    expect(memory.calls).toEqual({ create: 0, read: 0, readPhoto: 0 });
+    expect(memory.calls).toEqual({ create: 0, read: 0, readPhoto: 0, list: 0, readById: 0 });
   });
 
   it("без таксопарка не создаёт и не читает отчёт", async () => {
@@ -375,7 +427,7 @@ describe("shift report", () => {
     );
 
     expect(created.status).toBe(400);
-    expect(await created.json()).toEqual({ error: "invalid" });
+    expect(await created.json()).toEqual({ error: "invalid", fields: { mileageEnd: "required" } });
     expect(memory.calls.create).toBe(0);
     expect(memory.reports).toHaveLength(0);
   });
@@ -421,7 +473,9 @@ describe("shift report", () => {
     );
 
     expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error: "invalid", fields: { photo4: "required" } });
     expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "invalid", fields: { photo4: "image" } });
     expect(memory.calls.create).toBe(0);
   });
 
@@ -447,19 +501,20 @@ describe("shift report", () => {
     );
 
     expect(requested.status).toBe(400);
+    expect(await requested.json()).toEqual({ error: "invalid", form: "shift" });
     expect(rejected.status).toBe(400);
     expect(missing.status).toBe(400);
     expect(memory.calls.create).toBe(0);
   });
 
-  it("завтрашний день не создаёт отчёт, сегодня и вчера создают", async () => {
+  it("отчёт создаётся на завтра, сегодня и вчера", async () => {
     const memory = createMemoryStore();
     const shifts = [
       approved(carId, todayKey, "day"),
       approved(carId, yesterdayKey, "day"),
       approved(carId, tomorrowKey, "day"),
     ];
-    const app = createApp(memory.store, shifts, today);
+    const app = createApp(memory.store, shifts);
 
     const future = await app.request(
       apiPath(shiftReportsPath),
@@ -474,11 +529,10 @@ describe("shift report", () => {
       jsonRequest(worker, { taxiParkId: parkId, role: "worker" }, reportBody({ date: yesterdayKey })),
     );
 
-    expect(future.status).toBe(400);
-    expect(await future.json()).toEqual({ error: "invalid" });
+    expect(future.status).toBe(201);
     expect(current.status).toBe(201);
     expect(past.status).toBe(201);
-    expect(memory.reports.map((report) => report.date)).toEqual([todayKey, yesterdayKey]);
+    expect(memory.reports.map((report) => report.date)).toEqual([tomorrowKey, todayKey, yesterdayKey]);
   });
 
   it("дневной и ночной отчёты проходят, повтор смены нет, другая машина свободна", async () => {
@@ -511,7 +565,7 @@ describe("shift report", () => {
     expect(day.status).toBe(201);
     expect(night.status).toBe(201);
     expect(duplicate.status).toBe(409);
-    expect(await duplicate.json()).toEqual({ error: "conflict" });
+    expect(await duplicate.json()).toEqual({ error: "conflict", form: "duplicate" });
     expect(otherCar.status).toBe(201);
 
     const savedDay = await app.request(reportUrl(carId, todayKey, "day"), { headers: asUser(owner) });
@@ -598,5 +652,41 @@ describe("shift report", () => {
     expect(workerCreated.status).toBe(201);
     expect(ownerMemory.reports).toHaveLength(1);
     expect(workerMemory.reports).toHaveLength(1);
+  });
+
+  it("список машины отдаёт её отчёты, чужой парк по идентификатору не читает", async () => {
+    const memory = createMemoryStore();
+    const shifts = [approved(carId, todayKey, "day"), approved(carId, todayKey, "night")];
+    const app = createApp(memory.store, shifts);
+    const headers = asUser(owner);
+
+    const day = await app.request(
+      apiPath(shiftReportsPath),
+      jsonRequest(owner, { taxiParkId: parkId, role: "owner" }, reportBody({ shift: "day" })),
+    );
+    const night = await app.request(
+      apiPath(shiftReportsPath),
+      jsonRequest(owner, { taxiParkId: parkId, role: "owner" }, reportBody({ shift: "night" })),
+    );
+    const dayReport = shiftReportSchema.parse(await day.json());
+    const listed = await app.request(
+      `${apiPath(shiftReportsPath)}?carId=${encodeURIComponent(carId)}`,
+      { headers },
+    );
+    const byId = await app.request(apiPath(shiftReportByIdPath, { id: dayReport.id }), { headers });
+    const foreign = await app.request(apiPath(shiftReportByIdPath, { id: dayReport.id }), {
+      headers: asUser(owner, { taxiParkId: otherParkId, role: "owner" }),
+    });
+
+    expect(day.status).toBe(201);
+    expect(night.status).toBe(201);
+    expect(await listed.json()).toMatchObject({
+      reports: [
+        { id: dayReport.id, shift: "day" },
+        { shift: "night" },
+      ],
+    });
+    expect(await byId.json()).toMatchObject({ id: dayReport.id, shiftTotal: enteredNumbers.shiftTotal });
+    expect(foreign.status).toBe(404);
   });
 });

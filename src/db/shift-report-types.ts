@@ -37,6 +37,8 @@ export type ShiftReportDraft = ShiftReportNumbers & {
 
 export type ShiftReportStore = {
   create: (taxiParkId: string, draft: ShiftReportDraft) => Promise<ShiftReportRecord | "conflict">;
+  list: (taxiParkId: string, carId: string) => Promise<ShiftReportRecord[]>;
+  readById: (taxiParkId: string, reportId: string) => Promise<ShiftReportRecord | null>;
   read: (
     taxiParkId: string,
     carId: string,

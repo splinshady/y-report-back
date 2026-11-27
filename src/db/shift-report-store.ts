@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { createDb } from "./client.js";
 import { scheduleRequest, scheduleRequestDay, shiftReport } from "./schema.js";
 import type {
@@ -211,6 +211,27 @@ export function createDrizzleShiftReportStore(db: Database): ShiftReportStore {
       }
 
       return created;
+    },
+
+    async list(taxiParkId, carId) {
+      const rows = await db
+        .select(reportColumns)
+        .from(shiftReport)
+        .where(and(eq(shiftReport.taxiParkId, taxiParkId), eq(shiftReport.carId, carId)))
+        .orderBy(desc(shiftReport.workDate), asc(shiftReport.shift));
+
+      return rows.map((row) => recordFromRow(row));
+    },
+
+    async readById(taxiParkId, reportId) {
+      const rows = await db
+        .select(reportColumns)
+        .from(shiftReport)
+        .where(and(eq(shiftReport.taxiParkId, taxiParkId), eq(shiftReport.id, reportId)))
+        .limit(1);
+
+      const row = rows[0];
+      return row ? recordFromRow(row) : null;
     },
 
     read(taxiParkId, carId, date, shift) {

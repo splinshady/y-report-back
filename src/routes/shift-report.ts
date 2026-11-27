@@ -8,6 +8,7 @@ import type {
 import { decodeCarPhoto } from "./cars.js";
 
 export const shiftReportsPath = "/shift-reports";
+export const shiftReportByIdPath = "/shift-reports/{id}";
 export const shiftReportPhotoPath = "/shift-reports/{id}/photos/{slot}";
 
 const shiftReportShiftSchema = z.enum(["day", "night"]);
@@ -35,9 +36,50 @@ export const shiftReportSchema = z.object({
   shiftTotal: z.number(),
 });
 
+const shiftReportFieldCodeSchema = z.enum(["required", "number", "date", "image"]);
+
+const shiftReportNumberKeys = [
+  "mileageStart",
+  "mileageEnd",
+  "cashless",
+  "cash",
+  "discount",
+  "tip",
+  "wash",
+  "lineTime",
+  "cashStart",
+  "cashEnd",
+  "shiftTotal",
+] as const;
+
+const shiftReportPhotoKeys = ["photo1", "photo2", "photo3", "photo4"] as const;
+
+const shiftReportFieldsSchema = z.object({
+  date: shiftReportFieldCodeSchema.optional(),
+  mileageStart: shiftReportFieldCodeSchema.optional(),
+  mileageEnd: shiftReportFieldCodeSchema.optional(),
+  cashless: shiftReportFieldCodeSchema.optional(),
+  cash: shiftReportFieldCodeSchema.optional(),
+  discount: shiftReportFieldCodeSchema.optional(),
+  tip: shiftReportFieldCodeSchema.optional(),
+  wash: shiftReportFieldCodeSchema.optional(),
+  lineTime: shiftReportFieldCodeSchema.optional(),
+  cashStart: shiftReportFieldCodeSchema.optional(),
+  cashEnd: shiftReportFieldCodeSchema.optional(),
+  shiftTotal: shiftReportFieldCodeSchema.optional(),
+  photo1: shiftReportFieldCodeSchema.optional(),
+  photo2: shiftReportFieldCodeSchema.optional(),
+  photo3: shiftReportFieldCodeSchema.optional(),
+  photo4: shiftReportFieldCodeSchema.optional(),
+});
+
 const shiftReportErrorSchema = z.object({
   error: z.enum(["unauthorized", "forbidden", "invalid", "conflict", "missing"]),
+  fields: shiftReportFieldsSchema.optional(),
+  form: z.enum(["shift", "duplicate"]).optional(),
 });
+
+type ShiftReportFieldErrors = z.infer<typeof shiftReportFieldsSchema>;
 
 const createShiftReportBodySchema = z.object({
   carId: z.string(),
@@ -66,19 +108,43 @@ const errorResponse = {
   },
 } as const;
 
+const shiftReportListSchema = z.object({
+  reports: z.array(shiftReportSchema),
+});
+
+const shiftReportReadResponseSchema = z.union([shiftReportSchema, shiftReportListSchema]);
+
 const readShiftReportRoute = createRoute({
   method: "get",
   path: shiftReportsPath,
   responses: {
     200: {
-      description: "Отчёт смены",
+      description: "Отчёт смены или список отчётов машины",
+      content: {
+        "application/json": {
+          schema: shiftReportReadResponseSchema,
+        },
+      },
+    },
+    400: errorResponse,
+    401: errorResponse,
+    403: errorResponse,
+    404: errorResponse,
+  },
+});
+
+const readShiftReportByIdRoute = createRoute({
+  method: "get",
+  path: shiftReportByIdPath,
+  responses: {
+    200: {
+      description: "Отчёт по идентификатору",
       content: {
         "application/json": {
           schema: shiftReportSchema,
         },
       },
     },
-    400: errorResponse,
     401: errorResponse,
     403: errorResponse,
     404: errorResponse,
@@ -118,15 +184,91 @@ function isCalendarDate(value: string): boolean {
   return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
-export function isShiftReportDateAllowed(value: string, today: Date): boolean {
-  if (!isCalendarDate(value)) {
-    return false;
+
+function rawRecord(body: unknown): Record<string, unknown> {
+  if (typeof body === "object" && body !== null) {
+    return body as Record<string, unknown>;
   }
 
-  const todayMonth = String(today.getMonth() + 1).padStart(2, "0");
-  const todayDay = String(today.getDate()).padStart(2, "0");
-  const todayKey = `${today.getFullYear()}-${todayMonth}-${todayDay}`;
-  return value <= todayKey;
+  return {};
+}
+
+function photoField(index: number): (typeof shiftReportPhotoKeys)[number] | null {
+  return shiftReportPhotoKeys[index] ?? null;
+}
+
+function isNumberKey(value: PropertyKey): value is (typeof shiftReportNumberKeys)[number] {
+  return typeof value === "string" && shiftReportNumberKeys.some((key) => key === value);
+}
+
+function assignIssue(fields: ShiftReportFieldErrors, path: PropertyKey[], raw: Record<string, unknown>) {
+  const head = path[0];
+  if (head === "date") {
+    const value = raw.date;
+    fields.date = value == null || value === "" ? "required" : "date";
+    return;
+  }
+
+  if (isNumberKey(head)) {
+    const value = raw[head];
+    fields[head] = value == null || value === "" ? "required" : "number";
+    return;
+  }
+
+  if (head !== "photos") {
+    return;
+  }
+
+  const photos = Array.isArray(raw.photos) ? raw.photos : [];
+  const index = path[1];
+  if (typeof index === "number") {
+    const key = photoField(index);
+    if (!key) {
+      return;
+    }
+    fields[key] = photos[index] == null ? "required" : "image";
+    return;
+  }
+
+  for (let slot = 0; slot < shiftReportPhotoKeys.length; slot += 1) {
+    const key = photoField(slot);
+    if (key && photos[slot] == null) {
+      fields[key] = "required";
+    }
+  }
+}
+
+function invalidBody(fields: ShiftReportFieldErrors, form?: "shift") {
+  return shiftReportErrorSchema.parse({
+    error: "invalid",
+    ...(Object.keys(fields).length > 0 ? { fields } : {}),
+    ...(form ? { form } : {}),
+  });
+}
+
+function shiftReportInputErrors(body: unknown): ShiftReportFieldErrors | null {
+  const raw = rawRecord(body);
+  const parsed = createShiftReportBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const fields: ShiftReportFieldErrors = {};
+    for (const issue of parsed.error.issues) {
+      assignIssue(fields, issue.path, raw);
+    }
+    if (typeof raw.date === "string" && raw.date.trim().length > 0 && !isCalendarDate(raw.date)) {
+      fields.date = "date";
+    }
+    return fields;
+  }
+
+  if (parsed.data.carId.trim().length === 0) {
+    return {};
+  }
+
+  if (!isCalendarDate(parsed.data.date)) {
+    return { date: "date" };
+  }
+
+  return null;
 }
 
 function readShift(value: string | undefined): ShiftReportShift | null {
@@ -161,7 +303,6 @@ export function createShiftReportRoute(options: {
   ) => Promise<boolean>;
   getSession: (headers: Headers) => Promise<{ id: string; name: string } | null>;
   getMembership: (headers: Headers) => Promise<ParkMembership | null>;
-  today: () => Date;
 }) {
   const route = new OpenAPIHono();
 
@@ -188,9 +329,9 @@ export function createShiftReportRoute(options: {
     }
 
     const carId = c.req.query("carId")?.trim() ?? "";
-    const date = c.req.query("date")?.trim() ?? "";
-    const shift = readShift(c.req.query("shift"));
-    if (carId.length === 0 || !shift || !isCalendarDate(date)) {
+    const dateQuery = c.req.query("date");
+    const shiftQuery = c.req.query("shift");
+    if (carId.length === 0) {
       return c.json({ error: "invalid" as const }, 400);
     }
 
@@ -199,7 +340,39 @@ export function createShiftReportRoute(options: {
       return c.json({ error: "missing" as const }, 404);
     }
 
+    if (dateQuery == null && shiftQuery == null) {
+      const reports = await options.store.list(access.membership.taxiParkId, car.id);
+      return c.json(shiftReportListSchema.parse({ reports }), 200);
+    }
+
+    const date = dateQuery?.trim() ?? "";
+    const shift = readShift(shiftQuery);
+    if (!shift || !isCalendarDate(date)) {
+      return c.json({ error: "invalid" as const }, 400);
+    }
+
     const report = await options.store.read(access.membership.taxiParkId, car.id, date, shift);
+    if (!report) {
+      return c.json({ error: "missing" as const }, 404);
+    }
+
+    return c.json(shiftReportSchema.parse(report), 200);
+  });
+
+  route.openapi(readShiftReportByIdRoute, async (c) => {
+    const access = await readMember(c.req.raw.headers);
+    if ("error" in access) {
+      return access.error === "unauthorized"
+        ? c.json({ error: "unauthorized" as const }, 401)
+        : c.json({ error: "forbidden" as const }, 403);
+    }
+
+    const reportId = c.req.param("id");
+    if (!reportId) {
+      return c.json({ error: "missing" as const }, 404);
+    }
+
+    const report = await options.store.readById(access.membership.taxiParkId, reportId);
     if (!report) {
       return c.json({ error: "missing" as const }, 404);
     }
@@ -216,15 +389,22 @@ export function createShiftReportRoute(options: {
     }
 
     const json: unknown = await c.req.json().catch(() => null);
-    const parsed = createShiftReportBodySchema.safeParse(json);
-    const carId = parsed.success ? parsed.data.carId.trim() : "";
-    if (!parsed.success || carId.length === 0 || !isShiftReportDateAllowed(parsed.data.date, options.today())) {
-      return c.json({ error: "invalid" as const }, 400);
+    const inputErrors = shiftReportInputErrors(json);
+    if (inputErrors) {
+      return c.json(invalidBody(inputErrors), 400);
     }
 
-    const photos = parsed.data.photos.map((photo) => decodeCarPhoto(photo.contentType, photo.data));
-    if (photos.some((photo) => photo == null)) {
-      return c.json({ error: "invalid" as const }, 400);
+    const parsed = createShiftReportBodySchema.parse(json);
+    const photos = parsed.photos.map((photo) => decodeCarPhoto(photo.contentType, photo.data));
+    const photoErrors: ShiftReportFieldErrors = {};
+    photos.forEach((photo, index) => {
+      const key = photoField(index);
+      if (!photo && key) {
+        photoErrors[key] = "image";
+      }
+    });
+    if (Object.keys(photoErrors).length > 0) {
+      return c.json(invalidBody(photoErrors), 400);
     }
 
     const decoded = photos as [
@@ -233,7 +413,7 @@ export function createShiftReportRoute(options: {
       ShiftReportPhoto,
       ShiftReportPhoto,
     ];
-    const car = await options.findCar(access.membership.taxiParkId, carId);
+    const car = await options.findCar(access.membership.taxiParkId, parsed.carId.trim());
     if (!car) {
       return c.json({ error: "missing" as const }, 404);
     }
@@ -241,32 +421,32 @@ export function createShiftReportRoute(options: {
     const approved = await options.hasApprovedShift(
       access.membership.taxiParkId,
       car.id,
-      parsed.data.date,
-      parsed.data.shift,
+      parsed.date,
+      parsed.shift,
     );
     if (!approved) {
-      return c.json({ error: "invalid" as const }, 400);
+      return c.json(invalidBody({}, "shift"), 400);
     }
 
     const created = await options.store.create(access.membership.taxiParkId, {
       carId: car.id,
-      date: parsed.data.date,
-      shift: parsed.data.shift,
-      mileageStart: parsed.data.mileageStart,
-      mileageEnd: parsed.data.mileageEnd,
-      cashless: parsed.data.cashless,
-      cash: parsed.data.cash,
-      discount: parsed.data.discount,
-      tip: parsed.data.tip,
-      wash: parsed.data.wash,
-      lineTime: parsed.data.lineTime,
-      cashStart: parsed.data.cashStart,
-      cashEnd: parsed.data.cashEnd,
-      shiftTotal: parsed.data.shiftTotal,
+      date: parsed.date,
+      shift: parsed.shift,
+      mileageStart: parsed.mileageStart,
+      mileageEnd: parsed.mileageEnd,
+      cashless: parsed.cashless,
+      cash: parsed.cash,
+      discount: parsed.discount,
+      tip: parsed.tip,
+      wash: parsed.wash,
+      lineTime: parsed.lineTime,
+      cashStart: parsed.cashStart,
+      cashEnd: parsed.cashEnd,
+      shiftTotal: parsed.shiftTotal,
       photos: decoded,
     });
     if (created === "conflict") {
-      return c.json({ error: "conflict" as const }, 409);
+      return c.json(shiftReportErrorSchema.parse({ error: "conflict", form: "duplicate" }), 409);
     }
 
     return c.json(shiftReportSchema.parse(created), 201);

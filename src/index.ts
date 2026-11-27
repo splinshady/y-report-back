@@ -69,7 +69,6 @@ const shiftReports = createShiftReportRoute({
     hasApprovedShift(db, taxiParkId, carId, date, shift),
   getSession,
   getMembership,
-  today: () => new Date(),
 });
 
 const taxiPark = createTaxiParkRoute({
